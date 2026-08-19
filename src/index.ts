@@ -436,7 +436,9 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     excludeFilter: options.excludeFiles?.length
       ? createFilter(options.excludeFiles, undefined, { resolve: cwd })
       : undefined,
-    warnedMessages: options.warn !== 'always' ? new Set<string>() : undefined,
+    // Only meaningful when warning: an erroring build stops at the first violation, and
+    // keeping a Set across builds makes a reused plugin instance pass the second time.
+    warnedMessages: options.error === false && options.warn !== 'always' ? new Set<string>() : undefined,
   }))
 
   const relativeImporterCache = new Map<string, string>()

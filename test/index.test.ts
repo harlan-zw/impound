@@ -1072,6 +1072,46 @@ describe('trace mode (deferred violations)', () => {
   })
 })
 
+describe('a plugin instance reused across builds', () => {
+  // A watcher reuses one plugin instance. The de-duplication Set lives in the factory
+  // closure, so without scoping it to warn mode the second build passes silently with
+  // the denied import mocked, which is the opposite of what import protection is for.
+  const files: Record<string, string> = {
+    'entry.js': 'import mid from "middle.js";console.log(mid)',
+    'middle.js': 'import secret from "secret";export default secret',
+  }
+
+  const twoBuilds = async (opts: ImpoundOptions) => {
+    const plugin = ImpoundPlugin.rollup(opts)
+    const run = async () => {
+      try {
+        const bundle = await rollup({
+          input: 'entry.js',
+          plugins: [
+            plugin as any,
+            { name: 'files', resolveId: (id: string) => (id in files || id === 'secret') ? id : undefined, load: (id: string) => files[id] },
+            { name: 'lib', load: (id: string) => id === 'secret' ? 'export default 1' : undefined },
+          ],
+        })
+        await bundle.generate({})
+        return 'built'
+      }
+      catch (e) {
+        return (e as RollupError).message.includes('Denied') ? 'reported' : 'other'
+      }
+    }
+    return [await run(), await run()]
+  }
+
+  it('reports the violation on every build, not just the first', async () => {
+    expect(await twoBuilds({ patterns: [['secret', 'Denied']] })).toEqual(['reported', 'reported'])
+  })
+
+  it('reports on every build with tracing too', async () => {
+    expect(await twoBuilds({ trace: true, patterns: [['secret', 'Denied']] })).toEqual(['reported', 'reported'])
+  })
+})
+
 async function buildWithTrace(files: Record<string, string>, libs: string[], opts: ImpoundOptions, extraPlugins: any[] = []) {
   try {
     const entries = Object.keys(files)
