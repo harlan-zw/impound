@@ -92,15 +92,9 @@ violation actually happens.
 | Per-module cost | parse + sourcemap + retain | none |
 | Bundlers | all | all except esbuild |
 
-Lazy reports from `buildEnd`, and a dev server only calls that when it shuts down, so
-keep `true` for dev:
-
-```js
-ImpoundPlugin.vite({
-  trace: isDev ? true : 'lazy',
-  patterns: [[/\.server$/, 'Server-only import']]
-})
-```
+On a dev server lazy reports each violation as it is seen, since `buildEnd` only fires on
+shutdown. The chain is best-effort there, because the reverse graph is still filling in
+while modules resolve. Use `true` in dev for the full chain and original-source snippets.
 
 Lazy reads the graph through `getModuleInfo` on rollup, vite and rolldown, and through
 `compilation.moduleGraph` on webpack and rspack. On webpack the snippet comes from `originalSource()`,

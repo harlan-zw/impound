@@ -1214,6 +1214,56 @@ describe('trace mode parity on a real build', () => {
   })
 })
 
+describe('trace mode (lazy) on a dev server', () => {
+  const lazyPlugin = () => {
+    const plugins = ImpoundPlugin.vite({ trace: 'lazy', patterns: [['secret', 'Not allowed']] })
+    const array = Array.isArray(plugins) ? plugins : [plugins]
+    return array.find(plugin => plugin.name === 'impound')!
+  }
+
+  const graphContext = (error: (msg: string) => void) => ({
+    error,
+    getModuleInfo: (id: string) => ({
+      code: id === 'middle.js' ? 'import secret from "secret";export default secret' : 'import middle from "middle.js"',
+      importers: id === 'middle.js' ? ['entry.js'] : [],
+      isEntry: id === 'entry.js',
+    }),
+  })
+
+  it('reports while serving instead of holding until shutdown', async () => {
+    const plugin = lazyPlugin()
+    const error = vi.fn()
+    await (plugin as any).buildStart?.call({})
+    ;(plugin as any).vite.configResolved({ command: 'serve' })
+    await (plugin as any).resolveId.call(graphContext(error), 'secret', 'middle.js')
+    expect(error).toHaveBeenCalledTimes(1)
+    expect(error.mock.calls[0]![0]).toContain('Not allowed')
+  })
+
+  it('still enriches the report while serving', async () => {
+    const plugin = lazyPlugin()
+    const error = vi.fn()
+    await (plugin as any).buildStart?.call({})
+    ;(plugin as any).vite.configResolved({ command: 'serve' })
+    await (plugin as any).resolveId.call(graphContext(error), 'secret', 'middle.js')
+    const message = error.mock.calls[0]![0] as string
+    expect(message).toContain('Trace:')
+    expect(message).toContain('entry.js')
+    expect(message).toContain('Code:')
+  })
+
+  it('still defers to buildEnd for a build', async () => {
+    const plugin = lazyPlugin()
+    const error = vi.fn()
+    await (plugin as any).buildStart?.call({})
+    ;(plugin as any).vite.configResolved({ command: 'build' })
+    await (plugin as any).resolveId.call(graphContext(error), 'secret', 'middle.js')
+    expect(error).not.toHaveBeenCalled()
+    await (plugin as any).buildEnd.call(graphContext(error))
+    expect(error).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('trace mode (lazy) graph walking', () => {
   // A fake graph is used here rather than a real build, because the shapes under test
   // (depth limits, diamonds, missing code) are fiddly to provoke through a bundler.

@@ -105,8 +105,8 @@ export interface ImpoundSharedOptions {
    * original source. `'lazy'` collects nothing and reads the bundler's own graph at
    * `buildEnd` instead.
    *
-   * Use `'lazy'` for builds and keep `true` for a dev server: a dev server calls
-   * `buildEnd` when it shuts down, so violations would go unreported for the session.
+   * On a dev server `'lazy'` reports as violations are seen rather than at `buildEnd`,
+   * but the chain is best-effort there, so `true` still reads better in dev.
    *
    * Lazy needs a module graph, which every bundler but esbuild exposes; there it
    * reports the plain message.
@@ -626,16 +626,14 @@ function nativeGraphContext(native: NativeGraph | undefined, cwd: string | undef
 }
 
 /** Enrich a held violation once the bundler's graph is complete. Nothing was collected earlier. */
-async function enrichAndReportLazy(
+function enrichAndReportLazy(
   ctx: LazyGraphContext,
   violation: PendingViolation,
   maxTraceDepth: number,
   cwd: string | undefined,
   errorFn: (msg: string) => void,
   cache: Map<string, Map<string, ImportLocation>>,
-): Promise<void> {
-  await init
-
+): void {
   const trace = buildLazyTrace(ctx, violation.importer, maxTraceDepth, cwd, cache)
 
   let snippet: ImpoundSnippet | undefined
@@ -667,6 +665,11 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
   const entries = new Set<string>()
   // Violations waiting for the importer's transform to complete
   const pendingViolations = new Map<string, PendingViolation[]>()
+
+  // A dev server only calls `buildEnd` on shutdown, so lazy violations held for it would
+  // go unreported for the whole session. Report as they are seen instead.
+  let serving = false
+  const serveCache = new Map<string, Map<string, ImportLocation>>()
 
   const cwd = globalOptions.cwd
 
@@ -795,6 +798,13 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
               }
 
               if (traceMode === 'lazy') {
+                const lazyCtx = this as unknown as Partial<LazyGraphContext>
+                if (serving && typeof lazyCtx.getModuleInfo === 'function') {
+                  // `buildStart` awaited the lexer, so this can run inline.
+                  enrichAndReportLazy(lazyCtx as LazyGraphContext, violation, maxTraceDepth, cwd, useConsoleError ? console.error : this.error.bind(this), serveCache)
+                  matched = true
+                  continue
+                }
                 // Hold every violation. Nothing can enrich it until the graph is complete.
                 let pending = pendingViolations.get(importer)
                 if (!pending) {
@@ -952,6 +962,15 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
     // On the main plugin so violations stay attributed to `impound`. No transform hook:
     // nothing is parsed, no sourcemap forced, nothing retained.
     Object.assign(plugins[0]!, {
+      // Reporting from `resolveId` has nowhere to await, so ready the lexer up front.
+      async buildStart() {
+        await init
+      },
+      vite: {
+        configResolved(config: { command?: string }) {
+          serving = config.command === 'serve'
+        },
+      },
       async buildEnd(this: UnpluginBuildContext) {
         if (pendingViolations.size === 0) {
           return
@@ -985,7 +1004,7 @@ export const ImpoundPlugin = createUnplugin<ImpoundOptions>((globalOptions) => {
               : native?.addError || ((msg: string) => { throw new Error(msg) })
 
           if (graph) {
-            await enrichAndReportLazy(graph, violation, maxTraceDepth, cwd, errorFn, cache)
+            enrichAndReportLazy(graph, violation, maxTraceDepth, cwd, errorFn, cache)
           }
           else {
             // No module graph to read (esbuild). Report the plain message rather than
